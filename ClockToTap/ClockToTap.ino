@@ -3,14 +3,19 @@ CLOCK TO TAP
 Uses Arduino Leonardo bootloader and MIDIUSB library, oh and MIDI library (Francois Best)
 */
 
-#include <ButtonDebounce.h>
+//#include <ButtonDebounce.h>
 #include <MIDIUSB.h>
 #include <MIDI.h>
 
+bool intClock = true;
+bool notReceivedClockSinceBoot = true;
 bool littleButtStates[4] = { true,true,true,true };
 bool oldLittleButtStates[4] = { false,false,false,false };
 bool bigButtStates[4] = { true,true,true,true, };
 bool oldBigButtStates[4] = { false,false,false,false };
+unsigned long lastTimeOfTap = 0;
+unsigned long timeOfTap = 0;
+int clockStepTimer = 0;
 
 bool flippedTrips[4] = { false,false,false,false };
 unsigned long tripTimer[4] = { 0,0,0,0 };
@@ -54,8 +59,9 @@ const int debounceThresh = 10;
 bool inversion[4] = { false,false,false,false };
 
 void setup() {
-	MIDI.setHandleClock(clockTick);
-	MIDI.setHandleStart(handleStart);
+	//
+	MIDI.setHandleClock(MIDIClockTick);
+	MIDI.setHandleStart(MIDIStart);
 	MIDI.setHandleStop(handleStop);
 	MIDI.begin(MIDI_CHANNEL_OMNI); // Initiate MIDI communications, listen to all channels
 								   //Serial.begin(115200);
@@ -68,7 +74,6 @@ void setup() {
 	}
 	delay(500);
 	allLedsOff();
-
 }
 
 void allLedsOn() {
@@ -80,6 +85,41 @@ void allLedsOn() {
 void allLedsOff() {
 	for (int i = 0; i < 4; i++) {
 		digitalWrite(LEDs[i], LOW);
+	}
+}
+byte waitLedSelect = 0;
+unsigned long waitTimer = 0;
+int tapTimer = 0;
+void waiting4clock() {
+	if (tapTimer > 0) {
+		//intClock = true;
+		handleIntClock();
+	}
+}
+
+//unsigned long tapTimer = 0;
+unsigned long intClockTimer = 0;
+int tock = 0;
+void handleIntClock() {
+	//Serial.println(tapTimer);
+	if (tapTimer > 0) {
+		//if (millis() - intClockTimer > tapTimer>>3) {
+		if (millis() - intClockTimer > clockStepTimer) {
+			//tock++;
+			//Serial.println(tock);
+			clockTick();
+			intClockTimer = millis();
+		}
+	}
+}
+
+void lightScroll() {
+	if (millis() - waitTimer > 60) {
+		waitTimer = millis();
+		digitalWrite(LEDs[waitLedSelect], LOW);
+		waitLedSelect++;
+		waitLedSelect = waitLedSelect % 4;
+		digitalWrite(LEDs[waitLedSelect], HIGH);
 	}
 }
 
@@ -100,20 +140,33 @@ bool taps[4] = { false, false, false, false };
 bool isRunning = false;
 bool clockUpdated = false;
 
+void MIDIClockTick() {
+	intClock = false;
+	notReceivedClockSinceBoot = false;
+	clockTick();
+}
+
 void clockTick() {
+	
 	clockIncrement++;
-	//clockUpdated = true;
-	//Serial.println(clockIncrement);
 	handleTaps();
 }
 
 void handleStop() {
+	notReceivedClockSinceBoot = false;
 	Serial.println("STOP RESET");
 	isRunning = false;
 	allLedsOff();
 }
 
+void MIDIStart() {
+	intClock = false;
+	notReceivedClockSinceBoot = false;
+	handleStart();
+}
+
 void handleStart() {
+	notReceivedClockSinceBoot = false;
 	Serial.println("START");
 	isRunning = true;
 	clockIncrement = 0;
@@ -123,7 +176,7 @@ void handleStart() {
 byte tapBlinkLength = 3;
 int localTapTimer[4] = { 0,0,0,0 };
 void handleTaps() {
-
+	//Serial.println("hello");
 	for (int i = 0; i < 4; i++) {
 
 		localTapTimer[i] = clockIncrement % clockLengths[i];
@@ -151,6 +204,14 @@ void handleTaps() {
 
 
 void loop() {
+	if (notReceivedClockSinceBoot) {
+		//waiting4clock();
+	}
+
+	if (intClock) {
+		handleIntClock();
+	}
+
 	MIDI.read();
 	midiEventPacket_t rx;
 	do {
@@ -158,7 +219,8 @@ void loop() {
 		if (rx.header != 0) {
 			if (rx.header == 15) {
 				if (rx.byte1 == 248) {
-					clockTick();
+					
+					MIDIClockTick();
 				}
 				else if (rx.byte1 == 252) {
 
@@ -166,6 +228,8 @@ void loop() {
 				}
 			}
 			else if (rx.header == 3 && rx.byte1 == 242) { // a start 
+				intClock = false;
+				notReceivedClockSinceBoot = false;
 				handleStart();
 
 			}
@@ -251,9 +315,25 @@ void handleButts() {
 			bigDebounceTimers[i] = millis();
 			bigDebounceReady[i] = false;
 
-			clockDivisors[i]++;
-			clockDivisors[i] = clockDivisors[i] % 4;
-			setClockLengths(i);
+			Serial.print("bigButt - ");
+			Serial.println(i);
+
+			if ((i == 0) && intClock) {  //don't do this if we are handling last butt and we are in intClock
+				lastTimeOfTap = timeOfTap;
+				timeOfTap = millis();
+				if (timeOfTap - lastTimeOfTap < 3000) { //if less than 3 sec since last tap
+					tapTimer = timeOfTap - lastTimeOfTap;
+					clockStepTimer = tapTimer / 24;
+					handleStart();
+					Serial.print("CLOCKSTEPTIMER = ");
+					Serial.println(clockStepTimer);
+				}
+			}
+			else {
+				clockDivisors[i]++;
+				clockDivisors[i] = clockDivisors[i] % 4;
+				setClockLengths(i);
+			}
 
 		}
 		else if (!bigButtStates[i] && oldBigButtStates[i]) {
